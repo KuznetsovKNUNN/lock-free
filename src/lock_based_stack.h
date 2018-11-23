@@ -3,6 +3,7 @@
 
 #include "abstract_stack.h"
 
+#include <list>
 #include <mutex>
 #include <stack>
 
@@ -37,7 +38,7 @@ public:
     }
 
 protected:
-    std::stack<T> data;
+    std::stack<T, std::list<T>> data;
     mutable std::mutex m;
 };
 

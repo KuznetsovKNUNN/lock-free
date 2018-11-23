@@ -3,6 +3,7 @@
 
 #include "abstract_queue.h"
 
+#include <list>
 #include <queue>
 #include <mutex>
 
@@ -38,7 +39,7 @@ public:
 
 protected:
     mutable std::mutex m;
-    std::queue<T> data;
+    std::queue<T, std::list<T>> data;
 };
 
 } // namespace lock_free

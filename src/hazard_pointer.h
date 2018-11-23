@@ -3,14 +3,18 @@
 
 // based on Williams' C++ concurrency in action, ch. 7
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <functional>
 #include <thread>
+#include <vector>
 
 namespace lock_free {
 
-const unsigned int max_hazard_pointers = 10;
+const unsigned int max_hazard_pointers = 100;
+const unsigned int max_hp_per_thread = 2;
+const unsigned int max_reclaim_list_size = 1000;
 
 struct hazard_pointer
 {
@@ -18,7 +22,7 @@ struct hazard_pointer
     std::atomic<void*> pointer;
 };
 
-std::array<hazard_pointer, max_hazard_pointers> hazard_pointers;
+std::vector<hazard_pointer> hazard_pointers(max_hazard_pointers);
 
 class hp_owner
 {
@@ -58,10 +62,10 @@ protected:
     hazard_pointer *hp;
 };
 
-std::atomic<void*>& get_hazard_pointer_for_current_thread()
+std::atomic<void*>& get_hazard_pointer_for_current_thread(size_t i)
 {
-    thread_local static hp_owner hp;
-    return hp.get_pointer();
+    thread_local static hp_owner hp[max_hp_per_thread];
+    return hp[i].get_pointer();
 }
 
 bool hazard(void* p)
@@ -75,6 +79,9 @@ bool hazard(void* p)
     return false;
 }
 
+struct data_to_reclaim;
+thread_local static std::vector<data_to_reclaim*> reclaim_list;
+
 template <typename T>
 void do_delete(void* p)
 {
@@ -85,13 +92,11 @@ struct data_to_reclaim
 {
     void* data;
     std::function<void(void*)> deleter;
-    data_to_reclaim* next;
 
     template <typename T>
     data_to_reclaim(T* p):
         data(p),
-        deleter(&do_delete<T>),
-        next(0) { }
+        deleter(&do_delete<T>) { }
 
     ~data_to_reclaim()
     {
@@ -99,32 +104,44 @@ struct data_to_reclaim
     }
 };
 
-std::atomic<data_to_reclaim*> nodes_to_reclaim;
-
-void add_to_reclaim_list(data_to_reclaim* node)
+void delete_nodes_with_no_hazards()
 {
-    node->next = nodes_to_reclaim.load();
-    while (!nodes_to_reclaim.compare_exchange_weak(node->next, node));
+    std::vector<void*> hp;
+
+    for (size_t i = 0; i < max_hazard_pointers; ++i)
+    {
+        void* p = hazard_pointers[i].pointer.load();
+        if (p)
+            hp.push_back(p);
+    }
+
+    sort(hp.begin(), hp.end(), std::less<void*>());
+
+    auto i = reclaim_list.begin();
+    while (i != reclaim_list.end())
+    {
+        if (!std::binary_search(hp.begin(), hp.end(), (*i)->data))
+        {
+            delete *i;
+            if (&*i != &reclaim_list.back())
+                *i = reclaim_list.back();
+            reclaim_list.pop_back();
+        }
+        else ++i;
+    }
+}
+
+void add_to_reclaim_list(data_to_reclaim* data)
+{
+    reclaim_list.push_back(data);
+    if (reclaim_list.size() == max_reclaim_list_size)
+        delete_nodes_with_no_hazards();
 }
 
 template <typename T>
 void reclaim_later(T* data)
 {
     add_to_reclaim_list(new data_to_reclaim(data));
-}
-
-void delete_nodes_with_no_hazards()
-{
-    data_to_reclaim *current = nodes_to_reclaim.exchange(nullptr);
-    while (current)
-    {
-        data_to_reclaim* next = current->next;
-        if (!hazard(current->data))
-            delete current;
-        else
-            add_to_reclaim_list(current);
-        current = next;
-    }
 }
 
 } // namespace lock_free

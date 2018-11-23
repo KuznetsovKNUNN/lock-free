@@ -16,7 +16,7 @@ class hazard_lock_free_stack: public stack<T>
 public:
     hazard_lock_free_stack()
     {
-        head.store(nullptr, std::memory_order_relaxed);
+        head.store(nullptr);
     }
 
     bool push(const T& value) override
@@ -32,7 +32,8 @@ public:
 
     bool pop(T& result) override
     {
-        std::atomic<void*>& hp = get_hazard_pointer_for_current_thread();
+        std::atomic<void*>& hp = get_hazard_pointer_for_current_thread(0);
+
         node *old_head = head.load();
         do
         {
@@ -52,12 +53,8 @@ public:
         if (old_head)
         {
             result = std::move(old_head->data);
-            if (hazard(old_head))
-                reclaim_later(old_head);
-            else
-                delete old_head;
+            reclaim_later(old_head);
 
-            delete_nodes_with_no_hazards();
             return true;
         }
         return false;
