@@ -12,6 +12,8 @@ namespace lock_free {
 template <typename T>
 struct node;
 
+// для решения ABA-проблемы
+// увеличиваем tag каждый раз при работе с указателем
 template <typename T>
 struct tagged_pointer
 {
@@ -20,14 +22,14 @@ struct tagged_pointer
 
     tagged_pointer() noexcept: ptr(nullptr), tag(0) { }
     tagged_pointer(node<T>* p) noexcept: ptr(p), tag(0) { }
-    tagged_pointer(node<T>* p, unsigned int n) noexcept: ptr(p), tag(n) { }
+    tagged_pointer(node<T>* p, uintptr_t n) noexcept: ptr(p), tag(n) { }
 };
 
 template <typename T>
 struct node
 {
     T data;
-    std::atomic< tagged_pointer<T> > next;
+    std::atomic<tagged_pointer<T>> next;
 };
 
 template <typename T>
@@ -36,7 +38,7 @@ bool operator==(const tagged_pointer<T>& a, const tagged_pointer<T>& b)
     return a.ptr == b.ptr && a.tag == b.tag;
 }
 
-// lock-free queue using tagged pointers
+// lock-free очередь с использованием меченых указателей (tagged pointers)
 template <typename T, size_t N = 100>
 class tagged_lock_free_queue: public queue<T>
 {
@@ -47,13 +49,14 @@ public:
             node_storage[i].next.store(tagged_pointer<T>(&node_storage[i+1]));
 
         node_storage[N - 1].next.store(tagged_pointer<T>());
-
         free_nodes.store(tagged_pointer<T>(&node_storage[0]));
+
+        // queue_head и queue_tail указывают на dummy node
+        // очередь пустая когда head == tail и tail->next == nullptr
         node<T>* new_node = get_free_node();
         new_node->next.store(tagged_pointer<T>());
-
-        head.store(tagged_pointer<T>(new_node));
-        tail.store(tagged_pointer<T>(new_node));
+        queue_head.store(tagged_pointer<T>(new_node));
+        queue_tail.store(tagged_pointer<T>(new_node));
     }
 
     bool enqueue(const T& value) override
@@ -64,70 +67,87 @@ public:
         new_node->data = value;
         new_node->next.store(tagged_pointer<T>());
 
-        tagged_pointer<T> new_tail;
+        tagged_pointer<T> tail;
 
-        for(;;)
+        while (true)
         {
-            new_tail = tail.load();
-            tagged_pointer<T> next = new_tail.ptr->next.load();
+            tail = queue_tail.load();
+            tagged_pointer<T> next = tail.ptr->next.load();
 
-            if (new_tail == tail.load())
+            if (tail == queue_tail.load())
             {
+                // проверяем что tail указывает на последний элемент
                 if (next.ptr == nullptr)
                 {
-                    if (std::atomic_compare_exchange_strong(&new_tail.ptr->next,
+                    // пробуем добавить элемент в конец списка
+                    if (std::atomic_compare_exchange_strong(&tail.ptr->next,
                              &next, tagged_pointer<T>(new_node, next.tag + 1)))
-                                            break;
+                        break;
                 } else
                 {
-                    std::atomic_compare_exchange_strong(&tail, &new_tail,
-                         tagged_pointer<T>(next.ptr, new_tail.tag + 1));
+                    // queue_tail не указывает на последний элемент
+                    // пробуем переместить queue_tail
+                    std::atomic_compare_exchange_strong(&queue_tail, &tail,
+                         tagged_pointer<T>(next.ptr, tail.tag + 1));
                 }
             }
         }
 
-        std::atomic_compare_exchange_strong(&tail,
-             &new_tail, tagged_pointer<T>(new_node, new_tail.tag + 1));
+        // пробуем переместить queue_tail на вставленный элемент
+        std::atomic_compare_exchange_strong(&queue_tail,
+             &tail,tagged_pointer<T>(new_node, tail.tag + 1));
         return true;
     }
 
     bool dequeue(T& result) override
     {
-        tagged_pointer<T> new_head;
+        tagged_pointer<T> head;
 
-        for(;;)
+        while (true)
         {
-            new_head = head.load();
-            tagged_pointer<T> new_tail = tail.load();
-            tagged_pointer<T> next = new_head.ptr->next.load();
+            head = queue_head.load();
+            tagged_pointer<T> tail = queue_tail.load();
+            tagged_pointer<T> next = head.ptr->next.load();
 
-            if (new_head == head.load())
+            if (head == queue_head.load())
             {
-                if (new_head.ptr == new_tail.ptr)
+                // проверяем что очередь пуста или tail не последний
+                if (head.ptr == tail.ptr)
                 {
+                    // проверяем что очередь пуста
                     if (next.ptr == nullptr)
-                        return false;
-                    std::atomic_compare_exchange_strong(&tail, &new_tail,
-                         tagged_pointer<T>(next.ptr, new_tail.tag + 1));
+                        return false; // // очередь пуста
+
+                    // queue_tail не указывает на последний элемент
+                    // пробуем переместить queue_tail
+                    std::atomic_compare_exchange_strong(&queue_tail, &tail,
+                         tagged_pointer<T>(next.ptr, tail.tag + 1));
                 } else
                 {
-                result = std::move(next.ptr->data);
-                if (std::atomic_compare_exchange_strong(&head, &new_head,
-                         tagged_pointer<T>(next.ptr, new_head.tag + 1)))
-                    break;
+                    // очередь не пуста
+                    result = next.ptr->data;
+                    // пробуем передвинуть queue_head
+                    if (std::atomic_compare_exchange_strong(&queue_head, &head,
+                         tagged_pointer<T>(next.ptr, head.tag + 1)))
+                        break;
                 }
             }
         }
 
-        add_to_free_nodes(new_head.ptr);
+        // добавляем dummy node в список свободных элементов
+        add_to_free_nodes(head.ptr);
         return true;
     }
 
 protected:
-    alignas(128) std::atomic< tagged_pointer<T> > head;
-    alignas(128) std::atomic< tagged_pointer<T> > tail;
-    alignas(128) std::atomic< tagged_pointer<T> > free_nodes;
+    alignas(128) std::atomic<tagged_pointer<T>> queue_head;
+    alignas(128) std::atomic<tagged_pointer<T>> queue_tail;
 
+    // free_nodes указывает на свободные элементы в node_storage
+    alignas(128) std::atomic<tagged_pointer<T>> free_nodes;
+
+    // список свободных элементов
+    // вместо удаления помещаем элемент в node_storage
     std::array<node<T>, N> node_storage;
 
     node<T>* get_free_node()
@@ -141,9 +161,7 @@ protected:
                 return nullptr;
             next.tag = curr.tag + 1;
             next.ptr = curr.ptr->next.load().ptr;
-        } while (!free_nodes.compare_exchange_weak(curr, next,
-                                                   std::memory_order_acq_rel,
-                                                   std::memory_order_relaxed));
+        } while (!free_nodes.compare_exchange_weak(curr, next));
         return curr.ptr;
     }
 
@@ -157,9 +175,7 @@ protected:
             node->next = curr.ptr;
             new_top.tag = curr.tag + 1;
             new_top.ptr = node;
-        } while (!free_nodes.compare_exchange_weak(curr, new_top,
-                                                   std::memory_order_acq_rel,
-                                                   std::memory_order_relaxed));
+        } while (!free_nodes.compare_exchange_weak(curr, new_top));
     }
 };
 

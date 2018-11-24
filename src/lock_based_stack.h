@@ -9,7 +9,7 @@
 
 namespace lock_free {
 
-// thread-safe stack using locks
+// thread-safe стек с блокировкой (std::mutex)
 template <typename T>
 class lock_based_stack: public stack<T>
 {

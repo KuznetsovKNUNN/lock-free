@@ -9,6 +9,7 @@
 
 namespace lock_free {
 
+// lock-free очередь с использованием опасных указателей (hazard pointers)
 template <typename T>
 class hazard_lock_free_queue : public queue<T>
 {
@@ -17,8 +18,10 @@ public:
     {
         node* p = new node();
 
-        queue_head.store(p, std::memory_order_release);
-        queue_tail.store(p, std::memory_order_release);
+        // queue_head и queue_tail указывают на dummy node
+        // очередь пустая когда head == tail и tail->next == nullptr
+        queue_head.store(p);
+        queue_tail.store(p);
     }
 
     bool enqueue(const T& value) override
@@ -28,31 +31,34 @@ public:
 
         node* tail;
 
-        for(;;)
+        while (true)
         {
             std::atomic<void*>& hp = get_hazard_pointer_for_current_thread(0);
-            node* tail = queue_tail.load(std::memory_order_relaxed);
-
+            tail = queue_tail.load();
+            // объявляем tail как hazard указатель
             hp.store(tail);
-            if (tail != queue_tail.load(std::memory_order_acquire)) continue;
+            // проверяем что tail не изменился
+            if (tail != queue_tail.load()) continue;
+
             node* next = tail->next.load();
-            if (tail != queue_tail.load(std::memory_order_acquire)) continue;
+            if (tail != queue_tail.load()) continue;
 
             if (next != nullptr)
             {
-                queue_tail.compare_exchange_weak(tail, next,
-                                                 std::memory_order_release);
+                // queue_tail указывает не на последний элемент
+                queue_tail.compare_exchange_weak(tail, next);
                 continue;
             }
 
             node* temp = nullptr;
-            if (tail->next.compare_exchange_strong(temp, new_node,
-                                                   std::memory_order_release))
+            // записываем new_node в tail->next
+            // при условии что tail->next == nullptr
+            if (tail->next.compare_exchange_strong(temp, new_node))
                           break;
         }
 
-        queue_tail.compare_exchange_strong(tail, new_node,
-                                           std::memory_order_acq_rel);
+        // пробуем переместить queue_tail на вставленный элемент
+        queue_tail.compare_exchange_strong(tail, new_node);
         get_hazard_pointer_for_current_thread(0).store(nullptr);
         return true;
     }
@@ -61,42 +67,44 @@ public:
     {
         node* head;
 
-        for (;;)
+        while (true)
         {
+            // объявляем head и head->next как hazard
             std::atomic<void*>& hp1 = get_hazard_pointer_for_current_thread(0);
             std::atomic<void*>& hp2 = get_hazard_pointer_for_current_thread(1);
-            head = queue_head.load(std::memory_order_relaxed);
-
+            head = queue_head.load();
             hp1.store(head);
-            if (head != queue_head.load(std::memory_order_acquire)) continue;
+            if (head != queue_head.load()) continue;
 
-            node* tail = queue_tail.load(std::memory_order_relaxed);
-            node* next = head->next.load(std::memory_order_acquire);
+            node* tail = queue_tail.load();
+            node* next = head->next.load();
             hp2.store(next);
-            if (head != queue_head.load(std::memory_order_relaxed)) continue;
+            if (head != queue_head.load()) continue;
 
             if (next == nullptr)
             {
+                // пустая очередь
                 hp1.store(nullptr);
                 return false;
             }
 
             if (head == tail)
             {
-                queue_tail.compare_exchange_strong(tail, next,
-                                                   std::memory_order_release);
+                // queue_tail указывает не на последний  элемент
+                queue_tail.compare_exchange_strong(tail, next);
                 continue;
             }
 
-            result = std::move(next->data);
-            if (queue_head.compare_exchange_strong(head, next,
-                                                   std::memory_order_release))
-                break;
+            result = next->data;
+            // пытаемся передвинуть queue_head на head->next
+            if (queue_head.compare_exchange_strong(head, next)) break;
         }
 
+        // обнуляем hazard указатели
         get_hazard_pointer_for_current_thread(0).store(nullptr);
         get_hazard_pointer_for_current_thread(1).store(nullptr);
 
+        // добавляем dummy node в reclaim_list
         reclaim_later(head);
         return true;
     }

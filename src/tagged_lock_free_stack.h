@@ -9,21 +9,20 @@
 
 namespace lock_free {
 
-// lock-free stack using tagged pointers
+// lock-free стек с использованием меченых указателей (tagged pointers)
 template <typename T, size_t N = 100>
 class tagged_lock_free_stack: public stack<T>
 {
 public:
     tagged_lock_free_stack()
     {
-        head.store(tagged_pointer(), std::memory_order_relaxed);
+        head.store(tagged_pointer());
 
         for (size_t i = 0; i < N - 1; ++i)
             node_storage[i].next.ptr = &node_storage[i + 1];
-        node_storage[N - 1].next = tagged_pointer();
 
-        free_nodes.store(tagged_pointer(&node_storage[0]),
-                std::memory_order_relaxed);
+        node_storage[N - 1].next = tagged_pointer();
+        free_nodes.store(tagged_pointer(&node_storage[0]));
     }
 
     bool push(const T& value) override
@@ -49,6 +48,8 @@ public:
 protected:
     struct node;
 
+    // для решения ABA-проблемы
+    // увеличиваем tag каждый раз при работе с указателем
     struct tagged_pointer
     {
         node* ptr;
@@ -56,7 +57,7 @@ protected:
 
         tagged_pointer() noexcept: ptr(nullptr), tag(0) { }
         tagged_pointer(node* p) noexcept: ptr(p), tag(0) { }
-        tagged_pointer(node* p, unsigned int n) noexcept: ptr(p), tag(n) { }
+        tagged_pointer(node* p, uintptr_t n) noexcept: ptr(p), tag(n) { }
     };
 
     struct node
@@ -68,12 +69,14 @@ protected:
     alignas(128) std::atomic<tagged_pointer> head;
     alignas(128) std::atomic<tagged_pointer> free_nodes;
 
+    // список свободных элементов
+    // вместо удаления помещаем элемент в node_storage
     std::array<node, N> node_storage;
 
     node* get(std::atomic<tagged_pointer>& top)
     {
         tagged_pointer next;
-        tagged_pointer curr = top.load(std::memory_order_relaxed);
+        tagged_pointer curr = top.load();
 
         do
         {
@@ -81,25 +84,21 @@ protected:
                 return nullptr;
             next.tag = curr.tag + 1;
             next.ptr = curr.ptr->next.ptr;
-        } while (!top.compare_exchange_weak(curr, next,
-                                            std::memory_order_acq_rel,
-                                            std::memory_order_relaxed));
+        } while (!top.compare_exchange_weak(curr, next));
         return curr.ptr;
     }
 
     void put(std::atomic<tagged_pointer>& top, node* node)
     {
         tagged_pointer new_top;
-        tagged_pointer curr = top.load(std::memory_order_relaxed);
+        tagged_pointer curr = top.load();
 
         do
         {
             node->next = curr.ptr;
             new_top.tag = curr.tag + 1;
             new_top.ptr = node;
-        } while (!top.compare_exchange_weak(curr, new_top,
-                                            std::memory_order_acq_rel,
-                                            std::memory_order_relaxed));
+        } while (!top.compare_exchange_weak(curr, new_top));
     }
 };
 

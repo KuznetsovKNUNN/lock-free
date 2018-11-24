@@ -4,7 +4,6 @@
 // based on Williams' C++ concurrency in action, ch. 7
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <functional>
 #include <thread>
@@ -12,8 +11,11 @@
 
 namespace lock_free {
 
-const unsigned int max_hazard_pointers = 100;
-const unsigned int max_hp_per_thread = 2;
+// максимальное количество hazard указателей
+const unsigned int max_hazard_pointers   = 100;
+// количество hazard указателей доступных каждому потоку
+const unsigned int max_hp_per_thread     = 2;
+// максимальный размер массива отложенных для удаления элементов
 const unsigned int max_reclaim_list_size = 1000;
 
 struct hazard_pointer
@@ -35,6 +37,8 @@ public:
         for (size_t i = 0; i < max_hazard_pointers; ++i)
         {
             std::thread::id old_id;
+
+            // попытка завладеть hazard указателем
             if (hazard_pointers[i].id.compare_exchange_strong(
                         old_id, std::this_thread::get_id()))
             {
@@ -64,10 +68,12 @@ protected:
 
 std::atomic<void*>& get_hazard_pointer_for_current_thread(size_t i)
 {
+    // у каждого потока свои hazard указатели
     thread_local static hp_owner hp[max_hp_per_thread];
     return hp[i].get_pointer();
 }
 
+// проверка указателя на присутствие в массиве hazard указателей
 bool hazard(void* p)
 {
     for (size_t i = 0; i < max_hazard_pointers; ++i)
@@ -80,6 +86,8 @@ bool hazard(void* p)
 }
 
 struct data_to_reclaim;
+
+// уникальный для каждого потока массив отложенных для удаления элементов
 thread_local static std::vector<data_to_reclaim*> reclaim_list;
 
 template <typename T>
@@ -88,6 +96,8 @@ void do_delete(void* p)
     delete static_cast<T*>(p);
 }
 
+// структура, сохраняющая информацию о типе объекта
+// для последующего корректного удаления
 struct data_to_reclaim
 {
     void* data;
@@ -104,10 +114,12 @@ struct data_to_reclaim
     }
 };
 
+// освобождение безопасных указателей
 void delete_nodes_with_no_hazards()
 {
     std::vector<void*> hp;
 
+    // добавляем все ненулевые hazard указатели в массив hp
     for (size_t i = 0; i < max_hazard_pointers; ++i)
     {
         void* p = hazard_pointers[i].pointer.load();
@@ -115,11 +127,13 @@ void delete_nodes_with_no_hazards()
             hp.push_back(p);
     }
 
+    // сортируем для удобного поиска
     sort(hp.begin(), hp.end(), std::less<void*>());
 
     auto i = reclaim_list.begin();
     while (i != reclaim_list.end())
     {
+        // если указатель не в списке опасных, удаляем
         if (!std::binary_search(hp.begin(), hp.end(), (*i)->data))
         {
             delete *i;
@@ -134,6 +148,9 @@ void delete_nodes_with_no_hazards()
 void add_to_reclaim_list(data_to_reclaim* data)
 {
     reclaim_list.push_back(data);
+
+    // при достижении макс. размера
+    // пробуем удалить элементы, не отмеченные как hazard
     if (reclaim_list.size() == max_reclaim_list_size)
         delete_nodes_with_no_hazards();
 }

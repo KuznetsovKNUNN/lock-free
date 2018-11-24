@@ -9,24 +9,23 @@
 
 namespace lock_free {
 
-// lock-free stack using hazard pointers
+// lock-free стек с использованием опасных указателей (hazard pointers)
 template <typename T>
 class hazard_lock_free_stack: public stack<T>
 {
 public:
     hazard_lock_free_stack()
     {
-        head.store(nullptr);
+        stack_head.store(nullptr);
     }
 
     bool push(const T& value) override
     {
         node* new_node = new node();
         new_node->data = value;
-        new_node->next = head.load();
-        while (!head.compare_exchange_weak(new_node->next, new_node,
-                                           std::memory_order_acq_rel,
-                                           std::memory_order_relaxed));
+        new_node->next = stack_head.load();
+        // передвигаем stack_head на new_node
+        while (!stack_head.compare_exchange_weak(new_node->next, new_node));
         return true;
     }
 
@@ -34,26 +33,26 @@ public:
     {
         std::atomic<void*>& hp = get_hazard_pointer_for_current_thread(0);
 
-        node *old_head = head.load();
+        node* head = stack_head.load();
         do
         {
             node* temp;
             do
             {
-                temp = old_head;
-                hp.store(old_head);
-                old_head = head.load();
-            } while (old_head != temp);
-        } while (old_head &&
-                !head.compare_exchange_strong(old_head, old_head->next,
-                                              std::memory_order_acq_rel,
-                                              std::memory_order_relaxed));
+                temp = head;
+                // отмечаем head как hazard
+                hp.store(head);
+                head = stack_head.load();
+            } while (head != temp);
+        } while (head && !stack_head.compare_exchange_strong(head, head->next));
 
+        // stack_head передвинули на head->next
+        // можно обнулить hazard указатель
         hp.store(nullptr);
-        if (old_head)
+        if (head)
         {
-            result = std::move(old_head->data);
-            reclaim_later(old_head);
+            result = std::move(head->data);
+            reclaim_later(head);
 
             return true;
         }
@@ -67,7 +66,7 @@ protected:
         node* next;
     };
 
-    std::atomic<node*> head;
+    std::atomic<node*> stack_head;
 };
 
 } // namespace lock_free

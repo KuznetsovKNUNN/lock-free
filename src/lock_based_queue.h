@@ -9,7 +9,7 @@
 
 namespace lock_free {
 
-// thread-safe queue using locks
+// thread-safe очередь с блокировкой (std::mutex)
 template <typename T>
 class lock_based_queue: public queue<T>
 {
