@@ -12,7 +12,7 @@
 namespace lock_free {
 
 // максимальное количество hazard указателей
-const unsigned int max_hazard_pointers   = 100;
+const unsigned int max_hazard_pointers   = 10;
 // количество hazard указателей доступных каждому потоку
 const unsigned int max_hp_per_thread     = 2;
 // максимальный размер массива отложенных для удаления элементов

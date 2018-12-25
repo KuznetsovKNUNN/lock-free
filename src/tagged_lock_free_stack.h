@@ -40,7 +40,7 @@ public:
         node* node = get(head);
         if (node == nullptr)
             return false;
-        result = std::move(node->data);
+        result = node->data;
         put(free_nodes, node);
         return true;
     }

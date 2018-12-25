@@ -51,7 +51,7 @@ public:
         hp.store(nullptr);
         if (head)
         {
-            result = std::move(head->data);
+            result = head->data;
             reclaim_later(head);
 
             return true;

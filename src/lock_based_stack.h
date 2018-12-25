@@ -26,7 +26,7 @@ public:
         std::lock_guard<std::mutex> lock(m);
         if (data.empty())
             return false;
-        result = std::move(data.top());
+        result = data.top();
         data.pop();
         return true;
     }
