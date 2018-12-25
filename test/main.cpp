@@ -6,10 +6,6 @@
 #include "lock_based_queue.h"
 #include "tagged_lock_free_queue.h"
 
-// boost lock-free containers
-#include <boost/lockfree/stack.hpp>
-#include <boost/lockfree/queue.hpp>
-
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -93,148 +89,6 @@ bool container_test(std::vector<std::unique_ptr<Container<T>>> &containers,
     }
 
     // проверка, что сумма и количество элементов в контейнерах не изменились
-    bool correct = (node_count == num_elements) && (sum1 == sum2);
-    if (correct) std::cout << "correct, ";
-    else std::cout << "error, ";
-
-    std::cout << "work time: " << (time * 1000) << "ms" << std::endl;
-
-    return correct;
-}
-
-template <typename T>
-bool boost_stack_test(int num_elements, int num_threads, int num_operations)
-{
-    std::cout << "==============================="  << std::endl;
-    std::cout << "testing boost lock-free stack: "  << std::endl;
-
-    std::unique_ptr<boost::lockfree::stack<T>> c1(new boost::lockfree::stack<T>(num_elements));
-    std::unique_ptr<boost::lockfree::stack<T>> c2(new boost::lockfree::stack<T>(num_elements));
-    std::vector<std::unique_ptr<boost::lockfree::stack<T>>> containers;
-    containers.emplace_back(std::move(c1));
-    containers.emplace_back(std::move(c2));
-
-    T sum1 = T();
-    for (int i = 0; i < num_elements; ++i)
-    {
-        T val = static_cast<T>(i);
-        sum1 += val;
-        (containers[i % 2].operator ->())->push(val);
-    }
-
-    std::vector< std::future<void> > futs;
-    std::atomic<int> threads(num_threads);
-
-    auto start_time = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < num_threads; ++i)
-        futs.push_back(std::async(std::launch::async, [&, i]()
-        {
-            --threads;
-            while (threads.load())
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-
-            std::srand(unsigned(time(0)));
-
-            for (int j = 0; j < num_operations; ++j)
-            {
-                T val;
-                if ((containers[rand() & 1].operator ->())->pop(val))
-                    (containers[rand() & 1].operator ->())->push(val);
-            }
-        }));
-
-    for (auto& fut : futs)
-        fut.get();
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> dur =
-            std::chrono::duration_cast<
-            std::chrono::duration<double>>(end_time - start_time);
-    auto time = dur.count();
-
-    T sum2 = T();
-    int node_count = 0;
-    for (int i = 0; i < 2; ++i)
-    {
-        T val;
-        while ((containers[i].operator ->())->pop(val))
-        {
-            node_count++;
-            sum2 += val;
-        }
-    }
-
-    bool correct = (node_count == num_elements) && (sum1 == sum2);
-    if (correct) std::cout << "correct, ";
-    else std::cout << "error, ";
-
-    std::cout << "work time: " << (time * 1000) << "ms" << std::endl;
-
-    return correct;
-}
-
-template <typename T>
-bool boost_queue_test(int num_elements, int num_threads, int num_operations)
-{
-    std::cout << "==============================="  << std::endl;
-    std::cout << "testing boost lock-free queue: "  << std::endl;
-
-    std::unique_ptr<boost::lockfree::queue<T>> c1(new boost::lockfree::queue<T>(num_elements));
-    std::unique_ptr<boost::lockfree::queue<T>> c2(new boost::lockfree::queue<T>(num_elements));
-    std::vector<std::unique_ptr<boost::lockfree::queue<T>>> containers;
-    containers.emplace_back(std::move(c1));
-    containers.emplace_back(std::move(c2));
-
-    T sum1 = T();
-    for (int i = 0; i < num_elements; ++i)
-    {
-        T val = static_cast<T>(i);
-        sum1 += val;
-        (containers[i % 2].operator ->())->push(val);
-    }
-
-    std::vector< std::future<void> > futs;
-    std::atomic<int> threads(num_threads);
-
-    auto start_time = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < num_threads; ++i)
-        futs.push_back(std::async(std::launch::async, [&, i]()
-        {
-            --threads;
-            while (threads.load())
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-
-            std::srand(unsigned(time(0)));
-
-            for (int j = 0; j < num_operations; ++j)
-            {
-                T val;
-                if ((containers[rand() & 1].operator ->())->pop(val))
-                    (containers[rand() & 1].operator ->())->push(val);
-            }
-        }));
-
-    for (auto& fut : futs)
-        fut.get();
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> dur =
-            std::chrono::duration_cast<
-            std::chrono::duration<double>>(end_time - start_time);
-    auto time = dur.count();
-
-    T sum2 = T();
-    int node_count = 0;
-    for (int i = 0; i < 2; ++i)
-    {
-        T val;
-        while ((containers[i].operator ->())->pop(val))
-        {
-            node_count++;
-            sum2 += val;
-        }
-    }
-
     bool correct = (node_count == num_elements) && (sum1 == sum2);
     if (correct) std::cout << "correct, ";
     else std::cout << "error, ";
@@ -360,9 +214,7 @@ void run_tests()
 {
     std::cout << num_threads << " threads working..." << std::endl;
     run_stack_tests<T>();
-    boost_stack_test<T>(num_elements, num_threads, num_operations);
     run_queue_tests<T>();
-    boost_queue_test<T>(num_elements, num_threads, num_operations);
 }
 
 int main()

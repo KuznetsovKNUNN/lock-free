@@ -30,7 +30,6 @@ public:
         new_node->data = value;
 
         node* tail;
-
         while (true)
         {
             std::atomic<void*>& hp = get_hazard_pointer_for_current_thread(0);
